@@ -20,22 +20,5 @@ namespace Semantic.WEB.Controllers
             var results = await _openDataService.GetCityRankingAsync(limit);
             return Ok(results);
         }
-
-        [HttpGet("city")]
-        public async Task<IActionResult> GetCityByName([FromQuery] string name)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                return BadRequest("City name is required.");
-            }
-
-            var city = await _openDataService.GetCityByNameAsync(name);
-            if (city == null)
-            {
-                return NotFound($"No city found with name '{name}' in Ukraine.");
-            }
-
-            return Ok(city);
-        }
     }
 }

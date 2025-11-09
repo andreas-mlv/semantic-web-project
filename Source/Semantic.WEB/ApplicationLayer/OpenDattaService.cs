@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace Semantic.WEB.ApplicationLayer
 {
-    public class OpenDataService
+    public class OpenDattaService
     {
         private const string WikidataSparqlEndpoint = "https://query.wikidata.org/sparql";
         private const string WikipediaSummaryApi = "https://en.wikipedia.org/api/rest_v1/page/summary/";
@@ -16,45 +16,33 @@ namespace Semantic.WEB.ApplicationLayer
         private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(6);
         private const string CacheKey = "TourismCityRankingCache";
 
+
+        private List<CityDTO> cityList = new List<CityDTO> {
+        new CityDTO
+            {
+                CityLabel = "Київ",
+                CityEngName = "Kyiv",
+                TotalVisitors = 5000000,
+                LogoUrl = "https://upload.wikimedia.org/wikipedia/commons/9/9e/Logo_of_Kyiv%2C_Ukraine_%28English%29.svg",
+                Coordinates = "50.4501,30.5234"
+            }
+        };
         private bool _initialise = false;
 
-        public OpenDataService(IHttpClientFactory httpClientFactory, IMemoryCache cache)
+        public OpenDattaService()
         {
-            _httpClientFactory = httpClientFactory;
-            _cache = cache;
-        }
-
-        public async Task WarmUp()
-        {
-            if (_initialise)
-            {
-                return;
-            }
-
-            await GetCityRankingAsync(100);
+            _httpClientFactory = null;
+            _cache = null;
         }
 
         public async Task<List<CityDTO>> GetCityRankingAsync(int limit)
         {
-            try
-            {
-                string cacheKey = $"{CacheKey}_{limit}";
-                if (_cache.TryGetValue(cacheKey, out List<CityDTO> cached))
-                {
-                    return cached;
-                }
+            await Task.Delay(3000);
 
-                string sparql = BuildSparqlQuery(limit);
-                var results = await ExecuteSparqlAsync(sparql);
+            await Task.Yield();
 
-                _cache.Set(cacheKey, results, CacheDuration);
-                return results;
-            }
-            catch { }
-            return default;
-
+            return cityList;
         }
-
         private async Task<List<CityDTO>> ExecuteSparqlAsync(string sparql)
         {
             var client = _httpClientFactory.CreateClient("wikidata");
