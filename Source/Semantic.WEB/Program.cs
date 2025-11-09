@@ -1,3 +1,5 @@
+using Semantic.WEB.ApplicationLayer;
+
 namespace Semantic.WEB
 {
     public class Program
@@ -9,6 +11,8 @@ namespace Semantic.WEB
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddMemoryCache();
+
+            builder.Services.AddSingleton<OpenDataService>();
 
             // Register IHttpClientFactory
             builder.Services.AddHttpClient("wikidata", client =>
@@ -24,6 +28,12 @@ namespace Semantic.WEB
             {
                 app.UseExceptionHandler("/Error");
             }
+
+            // get OpenDataService and call warmup
+
+            var services = app.Services;
+            var openDataService = services.GetService<OpenDataService>();
+            openDataService.WarmUp();
 
             app.UseStaticFiles();
             app.UseRouting();

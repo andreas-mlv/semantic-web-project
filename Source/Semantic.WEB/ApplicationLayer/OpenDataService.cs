@@ -1,14 +1,11 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Caching.Memory;
+﻿using Microsoft.Extensions.Caching.Memory;
 using Semantic.WEB.Model;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
-namespace Semantic.WEB
+namespace Semantic.WEB.ApplicationLayer
 {
-    [ApiController]
-    [Route("api/tourism")]
-    public class TourismRankingController : ControllerBase
+    public class OpenDataService
     {
         private const string WikidataSparqlEndpoint = "https://query.wikidata.org/sparql";
         private const string WikipediaSummaryApi = "https://en.wikipedia.org/api/rest_v1/page/summary/";
@@ -16,48 +13,60 @@ namespace Semantic.WEB
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IMemoryCache _cache;
 
-        private const string CacheKey = "TourismCityRankingCache";
         private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(6);
+        private const string CacheKey = "TourismCityRankingCache";
 
-        public TourismRankingController(IHttpClientFactory httpClientFactory, IMemoryCache cache)
+        private bool _initialise = false;
+
+        public OpenDataService(IHttpClientFactory httpClientFactory, IMemoryCache cache)
         {
             _httpClientFactory = httpClientFactory;
             _cache = cache;
         }
 
-        [HttpGet("city-ranking")]
-        public async Task<IActionResult> GetCityRanking([FromQuery] int limit = 50)
+        public async Task WarmUp()
         {
-            if (_cache.TryGetValue(CacheKey + "_" + limit, out List<CityDTO> cached))
+            if (_initialise)
             {
-                return Ok(cached);
+                return;
+            }
+
+            await GetCityRankingAsync(100);
+        }
+
+        public async Task<List<CityDTO>> GetCityRankingAsync(int limit)
+        {
+            string cacheKey = $"{CacheKey}_{limit}";
+            if (_cache.TryGetValue(cacheKey, out List<CityDTO> cached))
+            {
+                return cached;
             }
 
             string sparql = BuildSparqlQuery(limit);
             var results = await ExecuteSparqlAsync(sparql);
 
-            _cache.Set(CacheKey + "_" + limit, results, CacheDuration);
-            return Ok(results);
+            _cache.Set(cacheKey, results, CacheDuration);
+            return results;
         }
 
-        [HttpGet("city")]
-        public async Task<IActionResult> GetCityByName([FromQuery] string name)
+        public async Task<CityDTO?> GetCityByNameAsync(string name)
         {
-            if (string.IsNullOrWhiteSpace(name))
+            string cacheKey = $"{CacheKey}_city_{name.ToLower()}";
+            if (_cache.TryGetValue(cacheKey, out CityDTO cached))
             {
-                return BadRequest("City name is required.");
+                return cached;
             }
 
             string sparql = BuildCityByNameQuery(name);
             var results = await ExecuteSparqlAsync(sparql);
             var city = results.FirstOrDefault();
 
-            if (city == null)
+            if (city != null)
             {
-                return NotFound($"No city found with name '{name}' in Ukraine.");
+                _cache.Set(cacheKey, city, CacheDuration);
             }
 
-            return Ok(city);
+            return city;
         }
 
         private async Task<List<CityDTO>> ExecuteSparqlAsync(string sparql)
@@ -68,8 +77,8 @@ namespace Semantic.WEB
                 new MediaTypeWithQualityHeaderValue("application/sparql-results+json"));
 
             var requestUri = WikidataSparqlEndpoint + "?query=" + Uri.EscapeDataString(sparql);
-
             using var resp = await client.GetAsync(requestUri);
+
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync();
@@ -87,8 +96,8 @@ PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX wikibase: <http://wikiba.se/ontology#>
 
-SELECT ?city ?cityLabel (SAMPLE(?enLabel) AS ?enCityLabel) (SUM(?visitors) AS ?totalVisitors) (COUNT(?attraction) AS ?attractionCount)
-       (SAMPLE(?cityCoord) AS ?coord) (SAMPLE(?logo) AS ?logo)
+SELECT ?city ?cityLabel (SAMPLE(?enLabel) AS ?enCityLabel) (SUM(?visitors) AS ?totalVisitors)
+       (COUNT(?attraction) AS ?attractionCount) (SAMPLE(?cityCoord) AS ?coord) (SAMPLE(?logo) AS ?logo)
 WHERE {{
   ?city (wdt:P31/wdt:P279*) wd:Q515.
   ?city wdt:P17 wd:Q212.
@@ -113,8 +122,8 @@ PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX wikibase: <http://wikiba.se/ontology#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
-SELECT ?city ?cityLabel (SAMPLE(?enLabel) AS ?enCityLabel) (SAMPLE(?cityCoord) AS ?coord) (SAMPLE(?logo) AS ?logo)
-       (SUM(?visitors) AS ?totalVisitors) (COUNT(?attraction) AS ?attractionCount)
+SELECT ?city ?cityLabel (SAMPLE(?enLabel) AS ?enCityLabel) (SAMPLE(?cityCoord) AS ?coord)
+       (SAMPLE(?logo) AS ?logo) (SUM(?visitors) AS ?totalVisitors) (COUNT(?attraction) AS ?attractionCount)
 WHERE {{
   ?city (wdt:P31/wdt:P279*) wd:Q515.
   ?city wdt:P17 wd:Q212.
@@ -156,7 +165,6 @@ LIMIT 1";
                     dto.CityLabel = labelVal.GetString();
                 }
 
-                string englishName = null;
                 if (b.TryGetProperty("enCityLabel", out var enLabelEl) && enLabelEl.TryGetProperty("value", out var enLabelVal))
                 {
                     dto.CityEngName = enLabelVal.GetString();
@@ -181,7 +189,6 @@ LIMIT 1";
                     dto.LogoUrl = logoVal.GetString();
                 }
 
-                // If no Wikidata logo, try Wikipedia with English name
                 if (string.IsNullOrEmpty(dto.LogoUrl) && !string.IsNullOrEmpty(dto.CityEngName))
                 {
                     var wikiImage = await FetchWikipediaImageAsync(dto.CityEngName);
@@ -197,7 +204,7 @@ LIMIT 1";
             return list;
         }
 
-        private async Task<string> FetchWikipediaImageAsync(string englishName)
+        private async Task<string?> FetchWikipediaImageAsync(string englishName)
         {
             try
             {
@@ -206,7 +213,6 @@ LIMIT 1";
                 client.DefaultRequestHeaders.Accept.Add(
                     new MediaTypeWithQualityHeaderValue("application/json"));
 
-                // Add a human-like User-Agent header (similar to a real browser)
                 client.DefaultRequestHeaders.UserAgent.Clear();
                 client.DefaultRequestHeaders.UserAgent.ParseAdd(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +

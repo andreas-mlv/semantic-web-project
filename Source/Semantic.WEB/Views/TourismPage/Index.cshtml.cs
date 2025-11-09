@@ -1,7 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
-namespace Semantic.WEB.Pages
+namespace Semantic.WEB.Pages.TourismPage
 {
     public class IndexModel : PageModel
     {
