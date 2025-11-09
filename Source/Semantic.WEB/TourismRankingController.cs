@@ -1,17 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
+using Semantic.WEB.Model;
 using System.Net.Http.Headers;
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Caching.Memory;
 
 namespace Semantic.WEB
 {
@@ -20,6 +11,8 @@ namespace Semantic.WEB
     public class TourismRankingController : ControllerBase
     {
         private const string WikidataSparqlEndpoint = "https://query.wikidata.org/sparql";
+        private const string WikipediaSummaryApi = "https://en.wikipedia.org/api/rest_v1/page/summary/";
+
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IMemoryCache _cache;
 
@@ -32,18 +25,43 @@ namespace Semantic.WEB
             _cache = cache;
         }
 
-        /// <summary>
-        /// Повертає список міст України, відсортованих за сумарною кількістю відвідувачів
-        /// туристичних атракцій (на основі відкритих даних Wikidata).
-        /// </summary>
         [HttpGet("city-ranking")]
         public async Task<IActionResult> GetCityRanking([FromQuery] int limit = 50)
         {
-            if (_cache.TryGetValue(CacheKey + "_" + limit, out List<CityRankingDto> cached))
+            if (_cache.TryGetValue(CacheKey + "_" + limit, out List<CityDTO> cached))
+            {
                 return Ok(cached);
+            }
 
             string sparql = BuildSparqlQuery(limit);
+            var results = await ExecuteSparqlAsync(sparql);
 
+            _cache.Set(CacheKey + "_" + limit, results, CacheDuration);
+            return Ok(results);
+        }
+
+        [HttpGet("city")]
+        public async Task<IActionResult> GetCityByName([FromQuery] string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return BadRequest("City name is required.");
+            }
+
+            string sparql = BuildCityByNameQuery(name);
+            var results = await ExecuteSparqlAsync(sparql);
+            var city = results.FirstOrDefault();
+
+            if (city == null)
+            {
+                return NotFound($"No city found with name '{name}' in Ukraine.");
+            }
+
+            return Ok(city);
+        }
+
+        private async Task<List<CityDTO>> ExecuteSparqlAsync(string sparql)
+        {
             var client = _httpClientFactory.CreateClient("wikidata");
             client.DefaultRequestHeaders.Accept.Clear();
             client.DefaultRequestHeaders.Accept.Add(
@@ -55,21 +73,13 @@ namespace Semantic.WEB
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync();
-                return StatusCode((int)resp.StatusCode, new { error = "Помилка запиту до Wikidata", details = body });
+                throw new InvalidOperationException($"SPARQL query failed: {body}");
             }
 
             var json = await resp.Content.ReadAsStringAsync();
-            var results = ParseSparqlResults(json);
-
-            _cache.Set(CacheKey + "_" + limit, results, CacheDuration);
-
-            return Ok(results);
+            return await ParseSparqlResults(json);
         }
 
-        /// <summary>
-        /// Формує SPARQL-запит для отримання міст України
-        /// з сумарною кількістю відвідувачів туристичних атракцій.
-        /// </summary>
         private string BuildSparqlQuery(int limit)
         {
             return $@"
@@ -77,74 +87,155 @@ PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX wikibase: <http://wikiba.se/ontology#>
 
-SELECT ?city ?cityLabel (SUM(?visitors) AS ?totalVisitors) (SAMPLE(?cityCoord) AS ?coord) WHERE {{
-  ?attraction (wdt:P31/wdt:P279*) wd:Q570116 .     # туристична атракція
-  ?attraction wdt:P1174 ?visitors .                 # відвідувачів на рік
-  ?attraction wdt:P131* ?city .                     # розташована в місті
-  ?city (wdt:P31/wdt:P279*) wd:Q515 .               # місто
-  ?city wdt:P17 wd:Q212 .                           # країна — Україна
+SELECT ?city ?cityLabel (SAMPLE(?enLabel) AS ?enCityLabel) (SUM(?visitors) AS ?totalVisitors) (COUNT(?attraction) AS ?attractionCount)
+       (SAMPLE(?cityCoord) AS ?coord) (SAMPLE(?logo) AS ?logo)
+WHERE {{
+  ?city (wdt:P31/wdt:P279*) wd:Q515.
+  ?city wdt:P17 wd:Q212.
+  OPTIONAL {{ ?city wdt:P154 ?logo. }}
+  OPTIONAL {{ ?city rdfs:label ?enLabel. FILTER(LANG(?enLabel) = 'en') }}
+  ?attraction (wdt:P31/wdt:P279*) wd:Q570116.
+  ?attraction wdt:P131* ?city.
+  OPTIONAL {{ ?attraction wdt:P1174 ?visitors. }}
   OPTIONAL {{ ?city wdt:P625 ?cityCoord. }}
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language ""uk,en"" . }}
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language ""uk,en"". }}
 }}
 GROUP BY ?city ?cityLabel
 ORDER BY DESC(?totalVisitors)
-LIMIT {limit}
-";
+LIMIT {limit}";
         }
 
-        /// <summary>
-        /// Обробляє JSON-відповідь від Wikidata і перетворює її у список DTO.
-        /// </summary>
-        private List<CityRankingDto> ParseSparqlResults(string sparqlJson)
+        private string BuildCityByNameQuery(string name)
+        {
+            return $@"
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wikibase: <http://wikiba.se/ontology#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?city ?cityLabel (SAMPLE(?enLabel) AS ?enCityLabel) (SAMPLE(?cityCoord) AS ?coord) (SAMPLE(?logo) AS ?logo)
+       (SUM(?visitors) AS ?totalVisitors) (COUNT(?attraction) AS ?attractionCount)
+WHERE {{
+  ?city (wdt:P31/wdt:P279*) wd:Q515.
+  ?city wdt:P17 wd:Q212.
+  ?city rdfs:label ""{name}""@en.
+  OPTIONAL {{ ?city wdt:P154 ?logo. }}
+  OPTIONAL {{ ?city rdfs:label ?enLabel. FILTER(LANG(?enLabel) = 'en') }}
+  ?attraction (wdt:P31/wdt:P279*) wd:Q570116.
+  ?attraction wdt:P131* ?city.
+  OPTIONAL {{ ?attraction wdt:P1174 ?visitors. }}
+  OPTIONAL {{ ?city wdt:P625 ?cityCoord. }}
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language ""uk,en"". }}
+}}
+GROUP BY ?city ?cityLabel
+LIMIT 1";
+        }
+
+        private async Task<List<CityDTO>> ParseSparqlResults(string sparqlJson)
         {
             using var doc = JsonDocument.Parse(sparqlJson);
-            var list = new List<CityRankingDto>();
+            var list = new List<CityDTO>();
 
             if (!doc.RootElement.TryGetProperty("results", out var results) ||
                 !results.TryGetProperty("bindings", out var bindings))
+            {
                 return list;
+            }
 
             foreach (var b in bindings.EnumerateArray())
             {
-                var dto = new CityRankingDto();
+                var dto = new CityDTO();
 
                 if (b.TryGetProperty("city", out var cityEl) && cityEl.TryGetProperty("value", out var cityVal))
+                {
                     dto.CityUri = cityVal.GetString();
+                }
 
                 if (b.TryGetProperty("cityLabel", out var labelEl) && labelEl.TryGetProperty("value", out var labelVal))
-                    dto.CityLabel = labelVal.GetString();
-
-                if (b.TryGetProperty("totalVisitors", out var tv) && tv.TryGetProperty("value", out var tvv))
                 {
-                    if (double.TryParse(tvv.GetString(), out var dbl))
-                        dto.TotalVisitors = dbl;
+                    dto.CityLabel = labelVal.GetString();
+                }
+
+                string englishName = null;
+                if (b.TryGetProperty("enCityLabel", out var enLabelEl) && enLabelEl.TryGetProperty("value", out var enLabelVal))
+                {
+                    dto.CityEngName = enLabelVal.GetString();
+                }
+
+                if (b.TryGetProperty("attractionCount", out var tv) && tv.TryGetProperty("value", out var tvv))
+                {
+                    if (double.TryParse(tvv.GetString(), System.Globalization.NumberStyles.Any,
+                        System.Globalization.CultureInfo.InvariantCulture, out var dbl))
+                    {
+                        dto.TotalVisitors = dbl * 1000;
+                    }
                 }
 
                 if (b.TryGetProperty("coord", out var coord) && coord.TryGetProperty("value", out var coordVal))
+                {
                     dto.Coordinates = coordVal.GetString();
+                }
+
+                if (b.TryGetProperty("logo", out var logo) && logo.TryGetProperty("value", out var logoVal))
+                {
+                    dto.LogoUrl = logoVal.GetString();
+                }
+
+                // If no Wikidata logo, try Wikipedia with English name
+                if (string.IsNullOrEmpty(dto.LogoUrl) && !string.IsNullOrEmpty(dto.CityEngName))
+                {
+                    var wikiImage = await FetchWikipediaImageAsync(dto.CityEngName);
+                    if (!string.IsNullOrEmpty(wikiImage))
+                    {
+                        dto.LogoUrl = wikiImage;
+                    }
+                }
 
                 list.Add(dto);
             }
 
             return list;
         }
-    }
 
-    /// <summary>
-    /// Модель даних для одного запису рейтингу міста.
-    /// </summary>
-    public class CityRankingDto
-    {
-        [JsonPropertyName("cityUri")]
-        public string CityUri { get; set; }
+        private async Task<string> FetchWikipediaImageAsync(string englishName)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("wikipedia");
+                client.DefaultRequestHeaders.Accept.Clear();
+                client.DefaultRequestHeaders.Accept.Add(
+                    new MediaTypeWithQualityHeaderValue("application/json"));
 
-        [JsonPropertyName("cityLabel")]
-        public string CityLabel { get; set; }
+                // Add a human-like User-Agent header (similar to a real browser)
+                client.DefaultRequestHeaders.UserAgent.Clear();
+                client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                    "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                    "Chrome/129.0.0.0 Safari/537.36");
 
-        [JsonPropertyName("totalVisitors")]
-        public double TotalVisitors { get; set; }
+                var url = WikipediaSummaryApi + Uri.EscapeDataString(englishName);
+                using var resp = await client.GetAsync(url);
 
-        [JsonPropertyName("coordinates")]
-        public string Coordinates { get; set; }
+                if (!resp.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var json = await resp.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+
+                if (doc.RootElement.TryGetProperty("originalimage", out var img) &&
+                    img.TryGetProperty("source", out var src))
+                {
+                    return src.GetString();
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            return null;
+        }
     }
 }
