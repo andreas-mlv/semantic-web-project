@@ -30,14 +30,11 @@ namespace Semantic.WEB.Tests
         [Fact]
         public async Task GetCityRankingAsync_ShouldReturnParsedCities()
         {
-            // Arrange
             string json = BuildWikidataJson("Київ", "Kyiv", "https://upload.wikimedia.org/wikipedia/commons/9/9e/Logo_of_Kyiv%2C_Ukraine_%28English%29.svg", 5000000, 34);
             var service = CreateService(json);
 
-            // Act
             var result = await service.GetCityRankingAsync(5);
 
-            // Assert
             Assert.Single(result);
             Assert.Equal("Київ", result[0].CityLabel);
             Assert.Equal("Kyiv", result[0].CityEngName);
@@ -48,11 +45,9 @@ namespace Semantic.WEB.Tests
         [Fact]
         public async Task GetCityRankingAsync_ShouldCacheResults()
         {
-            // Arrange
             string json = BuildWikidataJson("Київ", "Kyiv", "https://upload.wikimedia.org/wikipedia/commons/9/9e/Logo_of_Kyiv%2C_Ukraine_%28English%29.svg", 5000000, 34);
             var service = CreateService(json);
 
-            // Act
             var result1 = await service.GetCityRankingAsync(5);
             var result2 = await service.GetCityRankingAsync(5);
 
@@ -65,7 +60,6 @@ namespace Semantic.WEB.Tests
         [Fact]
         public async Task ParseSparqlResults_ShouldFallbackToWikipedia_WhenNoLogo()
         {
-            // Arrange
             string wikidataJson = BuildWikidataJson("Київ", "Kyiv", null, 1000000, 12);
             string wikiJson = JsonSerializer.Serialize(new
             {
@@ -73,10 +67,8 @@ namespace Semantic.WEB.Tests
             });
             var service = CreateService(wikidataJson, wikiJson);
 
-            // Act
             var result = await service.GetCityRankingAsync(50);
 
-            // Assert
             Assert.Single(result);
             Assert.Equal("https://upload.wikimedia.org/wikipedia/commons/9/9e/Logo_of_Kyiv%2C_Ukraine_%28English%29.svg", result[0].LogoUrl);
         }
