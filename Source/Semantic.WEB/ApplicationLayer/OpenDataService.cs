@@ -187,6 +187,8 @@ LIMIT 1";
                 list.Add(dto);
             }
 
+            list = list.OrderByDescending(x => x.TotalVisitors).ToList();
+
             return list;
         }
 
